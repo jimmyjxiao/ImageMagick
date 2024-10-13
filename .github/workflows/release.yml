@@ -21,14 +21,11 @@ jobs:
 
     strategy:
       matrix:
-        compiler: [ gcc, clang ]
+        compiler: [ gcc ]
         include:
           - compiler: gcc
             cxx_compiler: g++
             packages: gcc g++
-          - compiler: clang
-            cxx_compiler: clang++
-            packages: clang
 
     steps:
     - name: Install dependencies
@@ -36,12 +33,32 @@ jobs:
         set -e
         export DEBIAN_FRONTEND=noninteractive
         apt update -y
-        apt install -y autoconf curl fuse git kmod libbz2-dev libdjvulibre-dev libfontconfig-dev libfreetype6-dev libfribidi-dev libharfbuzz-dev liblcms-dev libopenexr-dev libopenjp2-7-dev libturbojpeg0-dev liblqr-dev libraqm-dev libtiff-dev libwebp-dev libx11-dev libxml2-dev liblzma-dev make software-properties-common wget ${{ matrix.packages }}
+        apt install -y ninja-build yasm cmake autoconf curl fuse git kmod libbz2-dev libdjvulibre-dev libfontconfig-dev libfreetype6-dev libfribidi-dev libharfbuzz-dev liblcms-dev libopenexr-dev libopenjp2-7-dev libturbojpeg0-dev liblqr-dev libraqm-dev libtiff-dev libwebp-dev libx11-dev libxml2-dev liblzma-dev make software-properties-common wget ${{ matrix.packages }}
         add-apt-repository ppa:git-core/ppa -y
         apt install -y git
-        add-apt-repository ppa:strukturag/libheif -y
-        add-apt-repository ppa:strukturag/libde265 -y
-        apt install libheif-dev -y
+    - name: Install Libraries
+      run: |
+        cd /usr/src/
+        git clone --branch v1.0.15 --depth=1 https://github.com/strukturag/libde265.git
+        git clone --branch v1.18.2 --depth=1 https://github.com/strukturag/libheif.git
+        cd libde265
+        cmake .
+        make -j$(nproc)
+        make install
+        cd /usr/src/libheif
+        mkdir build
+        cd build
+        git clone -b v3.10.0 --depth 1 https://aomedia.googlesource.com/aom
+        cd aom
+        cmake -S . -B build.libavif -G Ninja -DCMAKE_INSTALL_PREFIX="$(pwd)/dist" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DENABLE_DOCS=0 -DENABLE_EXAMPLES=0 -DENABLE_TESTDATA=0 -DENABLE_TESTS=0 -DENABLE_TOOLS=0 -DCONFIG_AV1_ENCODER=1
+        ninja -C build.libavif
+        ninja -C build.libavif install
+        cd ..
+        PKG_CONFIG_PATH=$(pwd)/aom/dist/lib/pkgconfig:/usr/local/lib/pkgconfig
+        export PKG_CONFIG_PATH=$(pwd)/aom/dist/lib/pkgconfig:/usr/local/lib/pkgconfig
+        cmake --preset=release-noplugins -DBUILD_SHARED_LIBS=OFF ..
+        make -j$(nproc)
+        make install
 
     - name: Checkout
       uses: actions/checkout@v4
@@ -66,7 +83,9 @@ jobs:
         CXX: ${{ matrix.cxx_compiler }}
       run: |
         set -e
-        ./configure --with-quantum-depth=16 --without-magick-plus-plus --without-perl --prefix=/usr
+        PKG_CONFIG_PATH=/usr/src/libheif/build/aom/dist/lib/pkgconfig:/usr/local/lib/pkgconfig
+        export PKG_CONFIG_PATH=/usr/src/libheif/build/aom/dist/lib/pkgconfig:/usr/local/lib/pkgconfig
+        ./configure --disable-shared --enable-delegate-build --with-quantum-depth=16 --without-magick-plus-plus --without-perl --prefix=/usr
         make
         make install DESTDIR=$(readlink -f /appdir)
 
@@ -80,6 +99,7 @@ jobs:
         unset QTDIR
         unset QT_PLUGIN_PATH
         unset LD_LIBRARY_PATH
+        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/lib"
         export VERSION=$(git rev-parse --short HEAD)-${{ matrix.compiler }}
         /app-image/linuxdeployqt-continuous-x86_64.AppImage --appimage-extract-and-run /appdir/usr/share/applications/imagemagick.desktop -bundle-non-qt-libs
         rm /appdir/AppRun
@@ -91,6 +111,9 @@ jobs:
         cp ImageMagick-$VERSION-x86_64.AppImage artifacts
         find /appdir -executable -type f -exec ldd {} \; | grep " => /usr" | cut -d " " -f 2-3 | sort | uniq
 
+    - name: Hack container for local development
+      if: ${{ env.ACT }}
+      run: echo /home/runner/externals/node20/bin >> $GITHUB_PATH
     - name: Upload ImageMagick AppImage
       uses: actions/upload-artifact@v4
       with:
